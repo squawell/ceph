@@ -7257,7 +7257,8 @@ int BlueStore::_do_read(
   uint64_t offset,
   size_t length,
   bufferlist& bl,
-  uint32_t op_flags)
+  uint32_t op_flags,
+  uint8_t retry_count)
 {
   FUNCTRACE(cct);
   int r = 0;
@@ -7469,7 +7470,14 @@ int BlueStore::_do_read(
       bufferlist& compressed_bl = *p++;
       if (_verify_csum(o, &bptr->get_blob(), 0, compressed_bl,
 		       b2r_it->second.front().logical_offset) < 0) {
-	return -EIO;
+        // Handles spurious read errors caused by a kernel bug.
+        // We sometimes get all-zero pages as a result of the read under
+        // high memory pressure. Retrying the failing read succeeds in most cases.
+        // See also: http://tracker.ceph.com/issues/22464
+        if (retry_count >= static_cast<uint8_t>(cct->_conf->bluestore_retry_disk_reads)) {
+          return -EIO;
+        }
+        return _do_read(c, o, offset, length, bl, op_flags, retry_count + 1);
       }
       bufferlist raw_bl;
       r = _decompress(compressed_bl, &raw_bl);
@@ -7487,7 +7495,14 @@ int BlueStore::_do_read(
       for (auto& reg : b2r_it->second) {
 	if (_verify_csum(o, &bptr->get_blob(), reg.r_off, reg.bl,
 			 reg.logical_offset) < 0) {
-	  return -EIO;
+          // Handles spurious read errors caused by a kernel bug.
+          // We sometimes get all-zero pages as a result of the read under
+          // high memory pressure. Retrying the failing read succeeds in most cases.
+          // See also: http://tracker.ceph.com/issues/22464
+          if (retry_count >= static_cast<uint8_t>(cct->_conf->bluestore_retry_disk_reads)) {
+            return -EIO;
+          }
+          return _do_read(c, o, offset, length, bl, op_flags, retry_count + 1);
 	}
 	if (buffered) {
 	  bptr->shared_blob->bc.did_read(bptr->shared_blob->get_cache(),
@@ -7531,6 +7546,10 @@ int BlueStore::_do_read(
   assert(pos == length);
   assert(pr == pr_end);
   r = bl.length();
+  if (retry_count) {
+    dout(5) << __func__ << " read at 0x" << std::hex << offset << "~" << length
+            << " failed " << std::dec << retry_count << " times before succeeding" << dendl;
+  }
   return r;
 }
 

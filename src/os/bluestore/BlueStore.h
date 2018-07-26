@@ -2344,7 +2344,8 @@ public:
     uint64_t offset,
     size_t len,
     bufferlist& bl,
-    uint32_t op_flags = 0);
+    uint32_t op_flags = 0,
+    uint8_t retry_count = 0);
 
 private:
   int _fiemap(CollectionHandle &c_, const ghobject_t& oid,
